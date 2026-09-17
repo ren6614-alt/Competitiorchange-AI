@@ -11,13 +11,14 @@ import {
   Report,
   PaymentOrder,
   PaymentEvent,
+  PaymentRequest,
   PlanType,
   OpportunityItem
 } from "../types/index.ts";
 import { analyzeCompetitorChange } from "./gemini.ts";
 import { getCrawlerProvider, detectPageChanges, CrawledPage } from "./crawler.ts";
 import { emailService } from "./email.ts";
-import { canAddProject, canAddCompetitor, canRunScan, PLAN_CONFIGS } from "./limits.ts";
+import { canAddProject, canAddCompetitor, canRunScan, PLAN_CONFIGS, checkAndIncrementScanUsage, COST_SAFEGUARDS } from "./limits.ts";
 
 /**
  * Server database state store with full relational consistency and RLS-equivalent isolation
@@ -36,6 +37,7 @@ class ServerDatabase {
   public paymentOrders: Map<string, PaymentOrder> = new Map();
   public paymentEvents: Map<string, PaymentEvent> = new Map();
   public opportunities: Map<string, OpportunityItem> = new Map();
+  public paymentRequests: Map<string, PaymentRequest> = new Map();
 
   constructor() {
     this.seedDemoData();
@@ -72,7 +74,8 @@ class ServerDatabase {
       user_id: userId,
       plan: "pro",
       status: "active",
-      cashfree_subscription_id: "cf_sub_sample_88",
+      gpay_transaction_id: "gpay_ord_sample_88",
+      upi_ref_id: "UTR491028371923",
       current_period_start: new Date(Date.now() - 5 * 86400000).toISOString(),
       current_period_end: new Date(Date.now() + 25 * 86400000).toISOString(),
       created_at: new Date(Date.now() - 30 * 86400000).toISOString(),
@@ -290,18 +293,54 @@ class ServerDatabase {
       created_at: new Date(Date.now() - 86400000).toISOString(),
     });
 
-    // 10. Sample Payment Order
+    // 10. Sample Payment Order & Payment Requests
     this.paymentOrders.set("ord_sample_01", {
       id: "ord_sample_01",
       user_id: userId,
-      provider: "cashfree",
-      provider_order_id: "cf_order_918237912",
+      provider: "gpay_upi",
+      provider_order_id: "gpay_ord_918237912",
       amount: 2499,
       currency: "INR",
       status: "PAID",
+      upi_id: "competitorchange@oksbi",
+      utr: "429182049182",
       metadata: { plan: "pro", billingCycle: "monthly" },
       created_at: new Date(Date.now() - 5 * 86400000).toISOString(),
       updated_at: new Date(Date.now() - 5 * 86400000).toISOString(),
+    });
+
+    this.paymentRequests.set("req_sample_01", {
+      id: "req_sample_01",
+      user_id: userId,
+      user_email: "founder@metrodental.com",
+      user_name: "Alex Vance",
+      plan: "pro",
+      amount: 2499,
+      currency: "INR",
+      utr: "429182049182",
+      upi_id: "competitorchange@oksbi",
+      payee_name: "CompetitorChange AI",
+      status: "approved",
+      approved_at: new Date(Date.now() - 5 * 86400000).toISOString(),
+      reviewed_by: "usr_admin_master_001",
+      created_at: new Date(Date.now() - 5 * 86400000).toISOString(),
+      updated_at: new Date(Date.now() - 5 * 86400000).toISOString(),
+    });
+
+    this.paymentRequests.set("req_sample_pending", {
+      id: "req_sample_pending",
+      user_id: "usr_demo_founder_102",
+      user_email: "contact@rivalsoftware.io",
+      user_name: "Sarah Lin",
+      plan: "pro",
+      amount: 2499,
+      currency: "INR",
+      utr: "518392019482",
+      upi_id: "competitorchange@oksbi",
+      payee_name: "CompetitorChange AI",
+      status: "pending",
+      created_at: new Date(Date.now() - 2 * 3600000).toISOString(),
+      updated_at: new Date(Date.now() - 2 * 3600000).toISOString(),
     });
   }
 
@@ -409,6 +448,12 @@ class ServerDatabase {
       throw new Error("Unauthorized: you do not own this competitor.");
     }
 
+    // Cost Safeguard: Check daily scan limits per user
+    const scanQuota = checkAndIncrementScanUsage(userId);
+    if (!scanQuota.allowed) {
+      throw new Error(scanQuota.reason || "Daily scan limit reached for free tier.");
+    }
+
     // 1. Create scan record
     const scanId = `scan_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
     const scan: Scan = {
@@ -443,8 +488,11 @@ class ServerDatabase {
     const crawler = getCrawlerProvider();
     const crawlResult = await crawler.crawl(competitor.website_url);
 
+    // Cost Safeguard: Cap pages saved per scan
+    const pagesToSave = crawlResult.pages.slice(0, COST_SAFEGUARDS.maxPagesPerScan);
+
     // 4. Save crawled pages
-    for (const p of crawlResult.pages) {
+    for (const p of pagesToSave) {
       const pageId = `page_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
       this.pages.set(pageId, {
         id: pageId,
@@ -459,7 +507,7 @@ class ServerDatabase {
     }
 
     // 5. Detect semantic changes
-    const diffs = detectPageChanges(previousPages, crawlResult.pages);
+    const diffs = detectPageChanges(previousPages, pagesToSave);
 
     const detectedChanges: DetectedChange[] = [];
     const generatedInsights: AIInsight[] = [];
@@ -470,7 +518,7 @@ class ServerDatabase {
         change_type: 'content_change' as const,
         page_url: competitor.website_url,
         old_value: 'Baseline snapshot established.',
-        new_value: crawlResult.pages[0]?.content.slice(0, 300) || 'Baseline content captured.',
+        new_value: pagesToSave[0]?.content.slice(0, 300) || 'Baseline content captured.',
         importance: 'low' as const,
       }
     ];
@@ -493,9 +541,10 @@ class ServerDatabase {
       this.changes.set(changeId, changeRecord);
       detectedChanges.push(changeRecord);
 
-      // 6. Gemini AI Analysis for meaningful changes
+      // 6. Gemini AI Analysis for meaningful changes (guarded with cost controls & fallback)
       try {
         const aiResult = await analyzeCompetitorChange({
+          userId,
           competitorName: competitor.name,
           competitorUrl: competitor.website_url,
           changeType: diff.change_type,
@@ -582,6 +631,205 @@ class ServerDatabase {
       insights: generatedInsights,
     };
   }
+
+  // --- Manual UPI Payment Requests & Entitlement Activation ---
+
+  createPaymentRequest(data: {
+    userId: string;
+    email: string;
+    name?: string;
+    plan: PlanType;
+    amount: number;
+    currency?: 'INR' | 'USD';
+    utr: string;
+    upiId: string;
+    payeeName: string;
+  }): PaymentRequest {
+    const id = `req_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const newRequest: PaymentRequest = {
+      id,
+      user_id: data.userId,
+      user_email: data.email,
+      user_name: data.name || "Founder",
+      plan: data.plan,
+      amount: data.amount,
+      currency: data.currency || "INR",
+      utr: data.utr.trim(),
+      upi_id: data.upiId,
+      payee_name: data.payeeName,
+      status: "pending",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    this.paymentRequests.set(id, newRequest);
+
+    // Also record in payment orders history as PENDING
+    const poId = `po_${id}`;
+    this.paymentOrders.set(poId, {
+      id: poId,
+      user_id: data.userId,
+      provider: "gpay_upi",
+      provider_order_id: id,
+      amount: data.amount,
+      currency: "INR",
+      status: "PENDING",
+      upi_id: data.upiId,
+      utr: data.utr.trim(),
+      metadata: {
+        plan: data.plan,
+        user_email: data.email,
+        type: "manual_upi",
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    return newRequest;
+  }
+
+  getUserPaymentRequests(userId: string): PaymentRequest[] {
+    return Array.from(this.paymentRequests.values())
+      .filter((r) => r.user_id === userId)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }
+
+  getAllPaymentRequests(): PaymentRequest[] {
+    return Array.from(this.paymentRequests.values())
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }
+
+  updatePaymentRequestStatus(
+    requestId: string,
+    adminUserId: string,
+    status: "approved" | "rejected",
+    adminNotes?: string
+  ): { success: boolean; request?: PaymentRequest; error?: string } {
+    const req = this.paymentRequests.get(requestId);
+    if (!req) {
+      return { success: false, error: "Payment request not found" };
+    }
+
+    req.status = status;
+    req.admin_notes = adminNotes;
+    req.reviewed_by = adminUserId;
+    req.updated_at = new Date().toISOString();
+
+    if (status === "approved") {
+      req.approved_at = new Date().toISOString();
+
+      // ACTIVATE Entitlement/Subscription for user
+      const now = new Date().toISOString();
+      const existingSub: Subscription = this.subscriptions.get(req.user_id) || {
+        id: `sub_${req.user_id}`,
+        user_id: req.user_id,
+        plan: "free",
+        status: "active",
+        current_period_start: now,
+        current_period_end: new Date(Date.now() + 30 * 86400000).toISOString(),
+        created_at: now,
+        updated_at: now,
+      };
+
+      existingSub.plan = req.plan;
+      existingSub.status = "active";
+      existingSub.gpay_transaction_id = req.id;
+      existingSub.upi_ref_id = req.utr;
+      existingSub.current_period_start = now;
+      existingSub.current_period_end = new Date(Date.now() + 30 * 86400000).toISOString();
+      existingSub.updated_at = now;
+      this.subscriptions.set(req.user_id, existingSub);
+
+      // Update associated payment order
+      const po = Array.from(this.paymentOrders.values()).find(
+        (o) => o.provider_order_id === req.id || o.utr === req.utr
+      );
+      if (po) {
+        po.status = "PAID";
+        po.updated_at = new Date().toISOString();
+        this.paymentOrders.set(po.id, po);
+      }
+
+      // Add user notification
+      const notifId = `notif_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+      this.notifications.set(notifId, {
+        id: notifId,
+        user_id: req.user_id,
+        type: "system",
+        title: `Payment Approved: ${req.plan.toUpperCase()} Plan Activated!`,
+        message: `Your manual UPI payment (UTR: ${req.utr}) of ₹${req.amount} has been verified and approved by the admin. Your Pro limits are active!`,
+        is_read: false,
+        created_at: new Date().toISOString(),
+      });
+    } else if (status === "rejected") {
+      req.rejected_at = new Date().toISOString();
+      const po = Array.from(this.paymentOrders.values()).find(
+        (o) => o.provider_order_id === req.id || o.utr === req.utr
+      );
+      if (po) {
+        po.status = "FAILED";
+        po.updated_at = new Date().toISOString();
+        this.paymentOrders.set(po.id, po);
+      }
+
+      // Add user notification
+      const notifId = `notif_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+      this.notifications.set(notifId, {
+        id: notifId,
+        user_id: req.user_id,
+        type: "system",
+        title: `Payment Verification Unsuccessful`,
+        message: `Your payment request for ₹${req.amount} (UTR: ${req.utr}) could not be verified. Reason: ${adminNotes || "Transaction could not be matched with bank statement."}`,
+        is_read: false,
+        created_at: new Date().toISOString(),
+      });
+    }
+
+    this.paymentRequests.set(requestId, req);
+    return { success: true, request: req };
+  }
+
+  // Row-Level Security Equivalent Isolation Helpers
+  getUserCompetitorIds(userId: string): Set<string> {
+    const userProjects = this.getUserProjects(userId);
+    const userProjectIds = new Set(userProjects.map((p) => p.id));
+    const competitorIds = new Set<string>();
+    for (const comp of this.competitors.values()) {
+      if (userProjectIds.has(comp.project_id)) {
+        competitorIds.add(comp.id);
+      }
+    }
+    return competitorIds;
+  }
+
+  userOwnsCompetitor(userId: string, competitorId: string): boolean {
+    const competitor = this.competitors.get(competitorId);
+    if (!competitor) return false;
+    const project = this.projects.get(competitor.project_id);
+    return project?.user_id === userId;
+  }
+
+  userOwnsChange(userId: string, changeId: string): boolean {
+    const change = this.changes.get(changeId);
+    if (!change) return false;
+    return this.userOwnsCompetitor(userId, change.competitor_id);
+  }
+
+  getUserOpportunities(userId: string): OpportunityItem[] {
+    const competitorIds = this.getUserCompetitorIds(userId);
+    return Array.from(this.opportunities.values()).filter((o) =>
+      competitorIds.has(o.competitor_id)
+    );
+  }
+
+  getUserReports(userId: string): Report[] {
+    const userProjects = this.getUserProjects(userId);
+    const userProjectIds = new Set(userProjects.map((p) => p.id));
+    return Array.from(this.reports.values()).filter((r) =>
+      userProjectIds.has(r.project_id)
+    );
+  }
 }
 
 export const db = new ServerDatabase();
+

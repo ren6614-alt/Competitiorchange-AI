@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ImportanceLevel, ChangeType } from "../types/index.ts";
+import { checkAndIncrementAiUsage, COST_SAFEGUARDS } from "./limits.ts";
 
 export interface AIAnalysisResult {
   summary: string;
@@ -8,17 +9,20 @@ export interface AIAnalysisResult {
   recommended_action: string;
   priority: ImportanceLevel;
   confidence: number;
+  provider?: "gemini_free_tier" | "deterministic_fallback";
+  quota_notice?: string;
 }
 
 let aiClient: GoogleGenAI | null = null;
 
 function getGenAI(): GoogleGenAI | null {
-  if (!aiClient && process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "MY_GEMINI_API_KEY") {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!aiClient && apiKey && apiKey !== "MY_GEMINI_API_KEY" && apiKey.trim().length > 0) {
     aiClient = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
+      apiKey: apiKey.trim(),
       httpOptions: {
         headers: {
-          'User-Agent': 'aistudio-build',
+          'User-Agent': 'CompetitorChange-AI/1.0',
         },
       },
     });
@@ -27,6 +31,7 @@ function getGenAI(): GoogleGenAI | null {
 }
 
 export async function analyzeCompetitorChange(params: {
+  userId?: string;
   competitorName: string;
   competitorUrl: string;
   changeType: ChangeType;
@@ -34,7 +39,24 @@ export async function analyzeCompetitorChange(params: {
   newContent: string;
   pageUrl: string;
 }): Promise<AIAnalysisResult> {
+  // 1. Cost Safeguard: Check daily AI request quota per user
+  if (params.userId) {
+    const quotaCheck = checkAndIncrementAiUsage(params.userId);
+    if (!quotaCheck.allowed) {
+      console.warn(`[AI Cost Safeguard] User ${params.userId} reached free daily limit. Applying fallback without paid billing.`);
+      const fallback = generateSmartMockAnalysis(params);
+      fallback.quota_notice = quotaCheck.reason || "AI analysis is temporarily unavailable because the current free usage limit has been reached. No paid service has been activated.";
+      fallback.provider = "deterministic_fallback";
+      return fallback;
+    }
+  }
+
   const ai = getGenAI();
+
+  // 2. Safe Prompt Construction with Input Token Truncation
+  const maxChars = Math.floor(COST_SAFEGUARDS.maxPromptInputChars / 2);
+  const truncatedOld = params.oldContent ? params.oldContent.slice(0, maxChars) : '[New page created, no previous content]';
+  const truncatedNew = params.newContent.slice(0, maxChars);
 
   const prompt = `You are a competitive intelligence analyst for CompetitorChange AI.
 Competitor Name: ${params.competitorName}
@@ -44,12 +66,12 @@ Detected Change Type: ${params.changeType}
 
 PREVIOUS CONTENT:
 """
-${params.oldContent ? params.oldContent.slice(0, 2000) : '[New page created, no previous content]'}
+${truncatedOld}
 """
 
 NEW CONTENT:
 """
-${params.newContent.slice(0, 2000)}
+${truncatedNew}
 """
 
 Instructions:
@@ -68,73 +90,121 @@ Instructions:
    - Return valid JSON matching the schema.`;
 
   if (!ai) {
-    // Graceful fallback with deterministic domain intelligence when API key is not yet set in environment
-    return generateSmartMockAnalysis(params);
+    // Deterministic intelligence fallback when API key is not configured
+    const fallback = generateSmartMockAnalysis(params);
+    fallback.provider = "deterministic_fallback";
+    return fallback;
   }
 
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: prompt,
-      config: {
-        systemInstruction: "You are an objective competitive intelligence analyst. You distinguish facts from inferences and never make ungrounded marketing claims.",
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            summary: {
-              type: Type.STRING,
-              description: "Fact-based summary of what specifically changed on the competitor's page.",
+  // Models to attempt in order of preference
+  const candidateModels = ["gemini-3.8-flash", "gemini-3.1-flash-lite"];
+  let lastError: any = null;
+
+  for (const modelName of candidateModels) {
+    try {
+      // 3. Call Gemini model
+      const responsePromise = ai.models.generateContent({
+        model: modelName,
+        contents: prompt,
+        config: {
+          systemInstruction: "You are an objective competitive intelligence analyst. You distinguish facts from inferences and never make ungrounded marketing claims.",
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              summary: {
+                type: Type.STRING,
+                description: "Fact-based summary of what specifically changed on the competitor's page.",
+              },
+              change_type: {
+                type: Type.STRING,
+                description: "The primary category of change: new_page, pricing_change, service_change, promotion_change, faq_change, heading_change, contact_change, hours_change, or cta_change.",
+              },
+              business_impact: {
+                type: Type.STRING,
+                description: "Why this change matters to competing businesses (inferred strategic intent).",
+              },
+              recommended_action: {
+                type: Type.STRING,
+                description: "Actionable next step for the customer's business.",
+              },
+              priority: {
+                type: Type.STRING,
+                description: "Importance level: low, medium, high, or critical.",
+              },
+              confidence: {
+                type: Type.NUMBER,
+                description: "Confidence score between 0 and 1.",
+              },
             },
-            change_type: {
-              type: Type.STRING,
-              description: "The primary category of change: new_page, pricing_change, service_change, promotion_change, faq_change, heading_change, contact_change, hours_change, or cta_change.",
-            },
-            business_impact: {
-              type: Type.STRING,
-              description: "Why this change matters to competing businesses (inferred strategic intent).",
-            },
-            recommended_action: {
-              type: Type.STRING,
-              description: "Actionable next step for the customer's business.",
-            },
-            priority: {
-              type: Type.STRING,
-              description: "Importance level: low, medium, high, or critical.",
-            },
-            confidence: {
-              type: Type.NUMBER,
-              description: "Confidence score between 0 and 1.",
-            },
+            required: ["summary", "change_type", "business_impact", "recommended_action", "priority", "confidence"],
           },
-          required: ["summary", "change_type", "business_impact", "recommended_action", "priority", "confidence"],
         },
-      },
-    });
+      });
 
-    const text = response.text;
-    if (!text) {
-      throw new Error("Empty response from Gemini model");
+      // Enforce strict timeout to prevent hung connections (allocate up to half timeout per model)
+      const perModelTimeout = Math.floor(COST_SAFEGUARDS.aiTimeoutMs / candidateModels.length);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("AI_REQUEST_TIMEOUT")), perModelTimeout)
+      );
+
+      const response = (await Promise.race([responsePromise, timeoutPromise])) as any;
+
+      const text = response.text;
+      if (!text) {
+        throw new Error("Empty response from Gemini model");
+      }
+
+      const parsed = JSON.parse(text) as AIAnalysisResult;
+
+      // Validate and sanitize priority
+      const validPriorities: ImportanceLevel[] = ["low", "medium", "high", "critical"];
+      const priority: ImportanceLevel = validPriorities.includes(parsed.priority) ? parsed.priority : "medium";
+
+      return {
+        summary: parsed.summary || `Observed change in ${params.changeType.replace('_', ' ')}`,
+        change_type: params.changeType,
+        business_impact: parsed.business_impact || "Competitor adjusted their positioning or service offering.",
+        recommended_action: parsed.recommended_action || "Review your corresponding page and highlight your unique value proposition.",
+        priority,
+        confidence: Math.max(0.1, Math.min(1.0, Number(parsed.confidence) || 0.85)),
+        provider: "gemini_free_tier",
+      };
+    } catch (error: any) {
+      lastError = error;
+      const errorMsg = error?.message || String(error);
+      const lower = errorMsg.toLowerCase();
+      // If temporary 503 high demand or timeout, try next candidate model
+      if (lower.includes("503") || lower.includes("unavailable") || lower.includes("high demand") || lower.includes("timeout")) {
+        console.info(`[Gemini Resilience] ${modelName} encountered temporary load (${errorMsg.slice(0, 80)}). Attempting secondary model...`);
+        continue;
+      }
+      // For quota or auth issues, no need to retry candidate models
+      break;
     }
-
-    const parsed = JSON.parse(text) as AIAnalysisResult;
-
-    // Validate and sanitize priority
-    const validPriorities: ImportanceLevel[] = ["low", "medium", "high", "critical"];
-    const priority: ImportanceLevel = validPriorities.includes(parsed.priority) ? parsed.priority : "medium";
-
-    return {
-      summary: parsed.summary || `Observed change in ${params.changeType.replace('_', ' ')}`,
-      change_type: params.changeType,
-      business_impact: parsed.business_impact || "Competitor adjusted their positioning or service offering.",
-      recommended_action: parsed.recommended_action || "Review your corresponding page and highlight your unique value proposition.",
-      priority,
-      confidence: Math.max(0.1, Math.min(1.0, Number(parsed.confidence) || 0.85)),
-    };
-  } catch (error) {
-    console.warn("Gemini API call failed or timed out, using fallback analyzer:", error);
-    return generateSmartMockAnalysis(params);
   }
+
+  // If all models encounter issues, safely apply deterministic domain intelligence
+  const errorMsg = lastError?.message || String(lastError || "Unknown error");
+  console.info(`[Gemini Safe Fallback] Using deterministic domain intelligence (${errorMsg.slice(0, 100)}).`);
+
+  const fallback = generateSmartMockAnalysis(params);
+  fallback.provider = "deterministic_fallback";
+
+  const lowerMsg = errorMsg.toLowerCase();
+  if (
+    lowerMsg.includes("429") ||
+    lowerMsg.includes("quota") ||
+    lowerMsg.includes("resource_exhausted") ||
+    lowerMsg.includes("billing") ||
+    lowerMsg.includes("rate")
+  ) {
+    fallback.quota_notice = "AI analysis is temporarily unavailable because the current free usage limit has been reached. No paid service has been activated.";
+  } else if (lowerMsg.includes("503") || lowerMsg.includes("demand") || lowerMsg.includes("unavailable")) {
+    fallback.quota_notice = "AI model is currently experiencing peak demand. Real-time deterministic analysis was applied.";
+  }
+
+  return fallback;
 }
 
 function generateSmartMockAnalysis(params: {

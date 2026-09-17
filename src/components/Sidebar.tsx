@@ -13,7 +13,7 @@ import {
   PlusCircle,
   ExternalLink,
 } from "lucide-react";
-import { PLAN_CONFIGS } from "../server/limits.ts";
+import { PLAN_CONFIGS } from "../constants/plans.ts";
 
 interface SidebarProps {
   currentRoute: string;

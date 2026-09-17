@@ -10,7 +10,8 @@ import {
   Report,
   OpportunityItem,
   PlanType,
-  PaymentOrder
+  PaymentOrder,
+  PaymentRequest
 } from "../types/index.ts";
 
 const API_BASE = "/api";
@@ -30,7 +31,15 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     headers,
   });
 
-  const data = await response.json();
+  let data: any;
+  const rawText = await response.text();
+  try {
+    data = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    throw new Error(
+      `API returned non-JSON response (${response.status} ${response.statusText}): ${rawText.slice(0, 120)}`
+    );
+  }
 
   if (!response.ok) {
     throw new Error(data.error || `Request failed with status ${response.status}`);
@@ -41,7 +50,8 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 
 export const api = {
   // Health
-  getHealth: () => request<{ status: string; app: string; ai_configured: boolean; cashfree_configured: boolean; crawler_mode: string }>("/health"),
+  getHealth: () => request<{ status: string; app: string; free_development_mode: boolean; ai_configured: boolean; gpay_upi_configured: boolean; crawler_mode: string }>("/health"),
+  getUsageStats: () => request<{ user_id: string; free_development_mode: boolean; aiRequests: number; maxAi: number; scans: number; maxScans: number }>("/usage/stats"),
 
   // Auth
   getCurrentUser: () => request<{ user: Profile; subscription: Subscription }>("/auth/me"),
@@ -106,22 +116,58 @@ export const api = {
   getNotifications: () => request<{ notifications: NotificationItem[] }>("/notifications"),
   markAllNotificationsRead: () => request<{ success: boolean }>("/notifications/mark-all-read", { method: "PATCH" }),
 
-  // Payments & Cashfree
+  // Payments & Manual UPI (Google Pay & UPI Apps)
+  getUPIPaymentInfo: (plan: PlanType = "pro") =>
+    request<{
+      upiId: string;
+      payeeName: string;
+      plan: PlanType;
+      amount: number;
+      currency: string;
+      upiUrl: string;
+      qrData: string;
+      transactionNote: string;
+    }>(`/payments/upi-info?plan=${plan}`),
+
+  submitUPIPaymentRequest: (data: { plan: PlanType; utr: string; email?: string }) =>
+    request<{
+      success: boolean;
+      message: string;
+      request: PaymentRequest;
+    }>("/payments/submit-request", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  getMyPaymentRequests: () =>
+    request<{ requests: PaymentRequest[] }>("/payments/my-requests"),
+
+  // Admin Payments Review
+  getAdminPaymentRequests: () =>
+    request<{ requests: PaymentRequest[] }>("/admin/payments/requests"),
+
+  reviewPaymentRequest: (data: { requestId: string; status: "approved" | "rejected"; adminNotes?: string }) =>
+    request<{ success: boolean; message: string; request: PaymentRequest }>("/admin/payments/review", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
   createPaymentOrder: (plan: PlanType, currency: "INR" | "USD" = "INR") =>
     request<{
       orderId: string;
-      paymentSessionId: string;
       orderAmount: number;
       orderCurrency: string;
+      upiId: string;
+      payeeName: string;
+      upiUrl: string;
+      gpayUrl: string;
+      qrData: string;
+      transactionNote: string;
+      plan: PlanType;
       environment: string;
     }>("/payments/create-order", {
       method: "POST",
       body: JSON.stringify({ plan, currency }),
-    }),
-  verifyPayment: (orderId: string) =>
-    request<{ success: boolean; status: string; plan?: string; message?: string }>("/payments/verify", {
-      method: "POST",
-      body: JSON.stringify({ orderId }),
     }),
   getSubscriptionInfo: () => request<{ subscription: Subscription; orders: PaymentOrder[] }>("/subscriptions/current"),
   cancelSubscription: () => request<{ success: boolean; subscription: Subscription }>("/subscriptions/cancel", { method: "POST" }),

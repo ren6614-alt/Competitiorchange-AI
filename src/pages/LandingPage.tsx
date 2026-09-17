@@ -20,7 +20,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { PriorityBadge, ChangeTypeBadge } from "../components/PriorityBadge.tsx";
-import { PLAN_PRICING } from "../server/payments.ts";
+import { PLAN_PRICING } from "../constants/plans.ts";
 
 interface LandingPageProps {
   onNavigate: (route: string) => void;
@@ -99,7 +99,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
               <Check className="w-4 h-4 text-emerald-600" /> Automated daily crawls
             </span>
             <span className="flex items-center gap-1.5">
-              <Check className="w-4 h-4 text-emerald-600" /> Cashfree India & Global billing
+              <Check className="w-4 h-4 text-emerald-600" /> Direct UPI & Google Pay transfers
             </span>
           </div>
         </div>

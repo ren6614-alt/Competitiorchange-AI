@@ -21,6 +21,8 @@ export interface Subscription {
   plan: PlanType;
   status: SubscriptionStatus;
   cashfree_subscription_id?: string | null;
+  gpay_transaction_id?: string | null;
+  upi_ref_id?: string | null;
   current_period_start: string;
   current_period_end: string;
   created_at: string;
@@ -158,15 +160,41 @@ export interface Report {
 
 export type PaymentOrderStatus = 'PENDING' | 'PAID' | 'FAILED' | 'EXPIRED' | 'CANCELLED';
 
+export type PaymentRequestStatus = 'pending' | 'approved' | 'rejected';
+
+export interface PaymentRequest {
+  id: string;
+  user_id: string;
+  user_email: string;
+  user_name?: string;
+  plan: PlanType;
+  amount: number;
+  currency: 'INR' | 'USD';
+  utr: string;
+  upi_id: string;
+  payee_name: string;
+  status: PaymentRequestStatus;
+  admin_notes?: string;
+  approved_at?: string;
+  rejected_at?: string;
+  reviewed_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface PaymentOrder {
   id: string;
   user_id: string;
   subscription_id?: string;
-  provider: 'cashfree' | 'stripe';
+  provider: 'gpay_upi' | 'cashfree' | 'stripe';
   provider_order_id: string;
   amount: number;
   currency: 'INR' | 'USD';
   status: PaymentOrderStatus;
+  upi_id?: string;
+  upi_url?: string;
+  gpay_url?: string;
+  utr?: string;
   metadata?: Record<string, any>;
   payment_session_id?: string;
   created_at: string;

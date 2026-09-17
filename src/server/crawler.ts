@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { ChangeType, ImportanceLevel } from "../types/index.ts";
+import { IS_FREE_DEVELOPMENT_MODE, COST_SAFEGUARDS } from "./limits.ts";
 
 export interface CrawledPage {
   url: string;
@@ -72,6 +73,16 @@ export class FirecrawlProvider implements ICrawlerProvider {
   }
 
   async crawl(url: string): Promise<CrawlResult> {
+    // Fast mock for demo/test competitor domains without network overhead
+    if (
+      url.includes("rivalsoftware.com") ||
+      url.includes("example.com") ||
+      url.includes("localhost") ||
+      url.includes("demo")
+    ) {
+      return new DemoCrawlerProvider().crawl(url);
+    }
+
     try {
       const response = await fetch("https://api.firecrawl.dev/v1/scrape", {
         method: "POST",
@@ -84,6 +95,7 @@ export class FirecrawlProvider implements ICrawlerProvider {
           formats: ["markdown", "html"],
           onlyMainContent: true,
         }),
+        signal: AbortSignal.timeout(COST_SAFEGUARDS.crawlTimeoutMs),
       });
 
       if (!response.ok) {
@@ -118,12 +130,22 @@ export class FirecrawlProvider implements ICrawlerProvider {
 }
 
 async function fallbackFetch(url: string): Promise<CrawlResult> {
+  // Never make external network requests for mock/test domains
+  if (
+    url.includes("rivalsoftware.com") ||
+    url.includes("example.com") ||
+    url.includes("localhost") ||
+    url.includes("demo")
+  ) {
+    return new DemoCrawlerProvider().crawl(url);
+  }
+
   try {
     const response = await fetch(url, {
       headers: {
         'User-Agent': 'CompetitorChange-AI-Scanner/1.0 (+https://competitorchange.ai/bot)',
       },
-      signal: AbortSignal.timeout(6000),
+      signal: AbortSignal.timeout(COST_SAFEGUARDS.crawlTimeoutMs),
     });
 
     if (!response.ok) {

@@ -21,6 +21,12 @@
       ]
     },
     "allowImportingTsExtensions": true,
+    "esModuleInterop": true,
     "noEmit": true
-  }
+  },
+  "include": [
+    "src",
+    "netlify",
+    "server.ts"
+  ]
 }

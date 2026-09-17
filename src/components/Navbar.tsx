@@ -142,7 +142,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onNavigate, currentRoute }) => {
             className={`px-2 py-1 rounded font-medium transition-colors ${
               currency === "INR" ? "bg-white text-slate-900 shadow-xs" : "text-slate-500 hover:text-slate-800"
             }`}
-            title="Switch to Indian Rupee (Cashfree India)"
+            title="Switch to Indian Rupee (Direct UPI / Google Pay)"
           >
             ₹ INR
           </button>
