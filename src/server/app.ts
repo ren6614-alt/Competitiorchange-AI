@@ -20,8 +20,7 @@ app.use(
 app.use(express.urlencoded({ extended: true }));
 
 // Netlify serverless function path normalization middleware
-// Safely handles direct "/.netlify/functions/api/...", "/api/...", and stripped subpaths.
-// NEVER collapses an API path to "/" before Express routing.
+// Safely handles direct "/.netlify/functions/api/..." prefixes.
 app.use((req, res, next) => {
   const PREFIX = "/.netlify/functions/api";
   if (req.url.startsWith(PREFIX)) {
@@ -31,14 +30,6 @@ app.use((req, res, next) => {
     } else {
       req.url = sub.startsWith("/api") ? sub : "/api" + (sub.startsWith("/") ? sub : "/" + sub);
     }
-  } else if (
-    !req.url.startsWith("/api") &&
-    req.url !== "/" &&
-    !req.url.startsWith("/assets") &&
-    !req.url.startsWith("/favicon") &&
-    !req.url.startsWith("/@")
-  ) {
-    req.url = "/api" + (req.url.startsWith("/") ? req.url : "/" + req.url);
   }
 
   // Remove duplicate trailing slashes for clean matching (except root /api)
@@ -879,8 +870,9 @@ app.post("/api/tests/run", authMiddleware, async (req, res) => {
   }
 });
 
-// JSON 404 handler for API routes - ensures no HTML is ever returned for API requests
-app.use((req, res) => {
+// JSON 404 handler for API routes - ensures unmatched API requests return JSON 404,
+// while letting frontend and Vite requests (like GET /) pass through to Vite middleware or static file handlers.
+app.use("/api", (req, res) => {
   res.status(404).json({
     error: `API endpoint not found: ${req.method} ${req.originalUrl || req.url}`,
     status: 404,
