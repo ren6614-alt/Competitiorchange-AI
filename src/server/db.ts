@@ -592,7 +592,7 @@ class ServerDatabase {
               importance: aiResult.priority,
               whyItMatters: aiResult.business_impact,
               recommendedAction: aiResult.recommended_action,
-              dashboardUrl: "http://localhost:3000/dashboard",
+              dashboardUrl: `${(process.env.APP_URL || "https://competitorchangeai.netlify.app/").replace(/\/$/, "")}/dashboard`,
             });
           }
         }

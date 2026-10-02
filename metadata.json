@@ -1,6 +1,6 @@
 {
   "name": "CompetitorChange AI",
-  "description": "Monitor competitor websites, detect meaningful changes, and get AI-powered recommendations for what your business should do next.",
+  "description": "CompetitorChange AI monitors competitor websites, detects meaningful changes, explains why they matter, and helps you decide what to do next.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

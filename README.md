@@ -68,7 +68,7 @@ GPAY_PAYEE_NAME=Gugan
 
 # Optional Alert Email
 RESEND_API_KEY=
-APP_URL=http://localhost:3000
+APP_URL=https://competitorchangeai.netlify.app/
 ```
 
 > **Security Mandate**: Never put `GEMINI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, or private credentials in frontend code or client bundles.

@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://comfy-cajeta-e1c14b.netlify.app/sitemap.xml
+Sitemap: https://competitorchangeai.netlify.app/sitemap.xml
